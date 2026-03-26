@@ -103,6 +103,33 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(widget)
         layout.setSpacing(16)
         
+        # Connection Mode group
+        mode_group = QGroupBox("Connection Mode")
+        mode_layout = QVBoxLayout(mode_group)
+        
+        mode_layout.addWidget(QLabel("How to route traffic:"))
+        self.connection_mode_combo = QComboBox()
+        self.connection_mode_combo.addItems([
+            "System Proxy (browser & proxy-aware apps only)",
+            "TUN Mode — VPN (all system traffic)"
+        ])
+        # Set current value
+        current_mode = self.settings.get("connection_mode", "proxy")
+        self.connection_mode_combo.setCurrentIndex(1 if current_mode == "tun" else 0)
+        mode_layout.addWidget(self.connection_mode_combo)
+        
+        # TUN mode info label
+        tun_info = QLabel(
+            "ℹ️  TUN Mode creates a virtual network interface (tun0) that captures ALL\n"
+            "traffic from every app. Requires root password (pkexec prompt).\n"
+            "SNI bypass and payload injection work the same in both modes."
+        )
+        tun_info.setStyleSheet("color: #8b949e; font-size: 11px; padding: 4px 0;")
+        tun_info.setWordWrap(True)
+        mode_layout.addWidget(tun_info)
+        
+        layout.addWidget(mode_group)
+        
         # Ports group
         ports_group = QGroupBox("Local Proxy Ports")
         ports_layout = QFormLayout(ports_group)
@@ -326,6 +353,9 @@ class SettingsDialog(QDialog):
         self.settings["check_updates"] = self.check_updates_check.isChecked()
         self.settings["socks_port"] = self.socks_port_spin.value()
         self.settings["http_port"] = self.http_port_spin.value()
+        
+        # Connection mode
+        self.settings["connection_mode"] = "tun" if self.connection_mode_combo.currentIndex() == 1 else "proxy"
         
         # DNS servers
         dns_servers = []
