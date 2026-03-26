@@ -22,6 +22,7 @@ from src.core.xray_controller import XrayController
 from src.core.profile_manager import ProfileManager
 from src.core.config_manager import ConfigManager
 from src.core.proxy_manager import ProxyManager
+from src.core.singbox_manager import SingBoxManager
 from src.utils.helpers import load_settings, save_settings
 from src.utils.network import check_proxy_connection
 
@@ -41,11 +42,14 @@ class MainWindow(QMainWindow):
             http_port=self.settings.get("http_port", 10809)
         )
         self.xray_controller = XrayController()
+        self.singbox_manager = SingBoxManager()
         
         # Connect signals
         self.xray_controller.status_changed.connect(self._on_connection_status_changed)
         self.xray_controller.log_received.connect(self._on_log_received)
         self.xray_controller.error_occurred.connect(self._on_error)
+        self.singbox_manager.status_changed.connect(self._on_log_received)
+        self.singbox_manager.error_occurred.connect(self._on_error)
         
         # State
         self.is_connected = False
@@ -107,6 +111,7 @@ class MainWindow(QMainWindow):
             self.xray_controller,
             self.config_manager,
             self.proxy_manager,
+            self.singbox_manager,
             self.settings
         )
         self.profile_widget = ProfileWidget(self.profile_manager)
@@ -381,6 +386,14 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self.settings = dialog.get_settings()
             save_settings(self.settings)
+            
+            # Propagate settings to all components
+            self.connect_widget.settings = self.settings
+            self.proxy_manager.update_ports(
+                socks_port=self.settings.get("socks_port", 10808),
+                http_port=self.settings.get("http_port", 10809)
+            )
+            
             self._update_status_bar()
     
     def _prompt_download_xray(self):
@@ -420,5 +433,8 @@ class MainWindow(QMainWindow):
         """Quit the application"""
         if self.is_connected:
             self.connect_widget.disconnect()
+        # Ensure sing-box cleanup even if disconnect failed
+        if self.singbox_manager.is_active:
+            self.singbox_manager.stop()
         self.tray_icon.hide()
         QApplication.quit()

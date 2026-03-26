@@ -13,6 +13,7 @@ from src.core.xray_controller import XrayController
 from src.core.profile_manager import ProfileManager
 from src.core.config_manager import ConfigManager
 from src.core.proxy_manager import ProxyManager
+from src.core.singbox_manager import SingBoxManager
 from src.core.protocol_parser import ServerProfile
 from src.utils.network import tcp_ping, get_public_ip
 from src.utils.helpers import get_protocol_icon, format_bytes
@@ -27,6 +28,7 @@ class ConnectWidget(QWidget):
                  xray_controller: XrayController,
                  config_manager: ConfigManager,
                  proxy_manager: ProxyManager,
+                 singbox_manager: SingBoxManager,
                  settings: dict):
         super().__init__()
         
@@ -34,6 +36,7 @@ class ConnectWidget(QWidget):
         self.xray_controller = xray_controller
         self.config_manager = config_manager
         self.proxy_manager = proxy_manager
+        self.singbox_manager = singbox_manager
         self.settings = settings
         
         self.current_profile: ServerProfile = None
@@ -259,6 +262,17 @@ class ConnectWidget(QWidget):
         if not self.current_profile:
             return
         
+        connection_mode = self.settings.get("connection_mode", "proxy")
+        
+        if connection_mode == "tun":
+            # TUN Mode: use sing-box (single process, native TUN)
+            self._connect_tun_mode()
+        else:
+            # Proxy Mode: use Xray + system proxy (original behavior)
+            self._connect_proxy_mode()
+    
+    def _connect_proxy_mode(self):
+        """Connect using Xray + system proxy"""
         # Generate config
         config = self.config_manager.generate_config(
             self.current_profile,
@@ -275,25 +289,57 @@ class ConnectWidget(QWidget):
             self.is_connected = True
             self._update_connection_ui()
             
-            # Enable system proxy if configured
             if self.settings.get("enable_system_proxy", True):
                 self.proxy_manager.enable_system_proxy()
             
             self.connection_changed.emit(True)
-            
-            # Capture session start for total tracking
-            import psutil
-            net_io = psutil.net_io_counters()
-            self.session_start_upload = net_io.bytes_sent
-            self.session_start_download = net_io.bytes_recv
-            
-            # Start stats timer
-            self.last_upload = 0
-            self.last_download = 0
-            self.stats_timer.start(1000)
-            
-            # Refresh proxy IP
+            self._start_stats_tracking()
             QTimer.singleShot(2000, lambda: self._refresh_proxy_ip())
+    
+    def _connect_tun_mode(self):
+        """Connect using sing-box with native TUN"""
+        from PyQt6.QtWidgets import QMessageBox
+        
+        # Check if sing-box exists, prompt download if not
+        if not self.singbox_manager.check_singbox_exists():
+            reply = QMessageBox.question(
+                self,
+                "sing-box Not Found",
+                "TUN Mode requires sing-box but it's not installed.\n\n"
+                "Would you like to download it now? (~15MB)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                if not self.singbox_manager.download_singbox():
+                    QMessageBox.warning(self, "Error", "Failed to download sing-box.")
+                    return
+            else:
+                return
+        
+        # Start sing-box with current profile (handles TUN, routing, DNS — all in one)
+        dns_servers = self.settings.get("dns_servers", ["8.8.8.8", "8.8.4.4"])
+        if self.singbox_manager.start(self.current_profile, dns_servers):
+            self.is_connected = True
+            self._update_connection_ui()
+            self.connection_changed.emit(True)
+            self._start_stats_tracking()
+            QTimer.singleShot(2000, lambda: self._refresh_proxy_ip())
+        else:
+            QMessageBox.warning(
+                self, "TUN Error",
+                "Failed to start sing-box TUN mode.\n"
+                "Check the logs for details."
+            )
+    
+    def _start_stats_tracking(self):
+        """Start upload/download stats tracking"""
+        import psutil
+        net_io = psutil.net_io_counters()
+        self.session_start_upload = net_io.bytes_sent
+        self.session_start_download = net_io.bytes_recv
+        self.last_upload = 0
+        self.last_download = 0
+        self.stats_timer.start(1000)
     
     def disconnect(self):
         """Disconnect from VPN"""
@@ -304,11 +350,12 @@ class ConnectWidget(QWidget):
         self._update_speed_display("upload", 0)
         self._update_speed_display("download", 0)
         
-        # Disable system proxy
-        self.proxy_manager.disable_system_proxy()
-        
-        # Stop Xray
-        self.xray_controller.stop()
+        # Stop sing-box if active, otherwise stop Xray + proxy
+        if self.singbox_manager.is_active:
+            self.singbox_manager.stop()
+        else:
+            self.proxy_manager.disable_system_proxy()
+            self.xray_controller.stop()
         
         self.is_connected = False
         self._update_connection_ui()
